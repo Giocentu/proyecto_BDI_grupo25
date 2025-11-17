@@ -1,0 +1,114 @@
+====================================================
+DOCUMENTACION DE TRANSACCIONES Y PRUEBAS 
+		RESTAURANTE 2025
+=====================================================
+
+1. RESUMEN FUNCIONAL DE TRANSACCIONES
+
+A. TRANSACCION: CREACIÓN DE RESERVA
+    Objetivo: Registrar una reserva y asignarle una mesa.
+    Operaciones:
+        INSERT en reserva (con columna calculada fecha_max_cancelacion).
+        INSERT en reserva_mesa (asignación de mesa).
+    Validaciones Previas:
+        * Evitar duplicidad (mismo cliente y fecha/hora).
+        * Verificar Horario de Negocio (Hora de reserva entre 18:00 y 00:00).
+        * Verificar Capacidad (cant_personas vs. capacidad de mesa).
+        * Verificar Disponibilidad (mesa no reservada en esa fecha/hora, excluyendo Cancelado).
+        * Verificar el rol del empleado asignador (debe ser el rol de Mozo/3).
+        * Verificar que el nro de mesa corresponda a la ubicacion.
+
+B. TRANSACCION: REGISTRO DE PAGO
+    Objetivo: Registrar un pago y actualizar el estado de la reserva a "Pagado".
+    Operaciones:
+        INSERT en pagos (registrando monto, método y fecha).
+        UPDATE en reserva (cambia id_estado a 'Pagado').
+    Validaciones Previas:
+        * Evitar pagos duplicados para la misma reserva.
+        * Verificar metodo de pago exista.
+        * Verificar Estado Actual (No se puede pagar una reserva que ha sido 'Cancelado').
+
+C. TRANSACCION: CANCELACIÓN DE RESERVA
+    Objetivo: Cambiar el estado de una reserva a "Cancelado" y liberar la(s) mesa(s).
+    Operaciones:
+        UPDATE en reserva (cambia id_estado a 'Cancelado').
+        DELETE en reserva_mesa (libera mesas).
+    Validaciones Previas:
+        * Verificar Estado Actual (Evitar cancelar una reserva que ya se encuentra en estado 'Cancelado').
+
+D. TRANSACCION: ASIGNACIÓN/CAMBIO DE ROL DEL EMPLEADO
+    Objetivo: Gestionar la activación de un nuevo rol y turno para un empleado, asegurando un solo rol activo a la vez.
+    Operaciones:
+        UPDATE en empleado (Desactiva el rol anterior activo).
+        UPDATE o INSERT en empleado (Activa el nuevo rol/turno).
+    Validaciones Previas:
+        * Verificar Existencia de DNI, Rol y Turno.
+        * Evitar Operación si el mismo rol/turno ya está activo.
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+2. CASOS DE FALLO Y EFECTIVIDAD DEL MANEJO DE ERRORES
+========================================================================
+ TRANSACCIÓN: CREACIÓN DE RESERVA (Inserta en reserva y reserva_mesa)
+========================================================================
+
+| # |   Caso de Prueba | Resultado Esperado | Condición (Validación T-SQL) |
+|---|---|---|---|
+| 1.1 | Éxito (Ruta Feliz) | Éxito. Inserción en ambas tablas. | Pasa todas las validaciones (horario, capacidad, disponibilidad, existencia de datos). |
+| 1.2 | Fallo: Duplicidad de Cliente | Fallo. RAISERROR: "El cliente ya tiene una reserva para esta fecha y hora." | Unicidad de cliente en misma fecha/hora. |
+| 1.3 | Fallo: Fuera de Horario | Fallo. RAISERROR: "La hora de reserva debe estar entre las 18:00 y las 00:00." | Validación de horario de negocio. |
+| 1.4 | Fallo: Mesa No Disponible | Fallo. RAISERROR: "La mesa X ya está reservada para la fecha y hora especificada." | Validación de mesa libre en el tiempo de reserva. |
+| 1.5 | Fallo: Capacidad Excedida | Fallo. RAISERROR: "La cantidad de personas excede la capacidad máxima de la mesa..." | Validación de cant_personas vs. mesa.capacidad. |
+| 1.6 | Fallo: Rol Incorrecto | Fallo. RAISERROR: "El empleado asignado no tiene el ID de rol especificado o no existe." | Validación del id_rol (solo el rol 3 puede registrar reserva). |
+
+========================================================================
+ TRANSACCIÓN: REGISTRO DE PAGO (Inserta en pagos y actualiza estado)
+========================================================================
+
+| # | Caso de Prueba | Resultado Esperado | Condición (Validación T-SQL) |
+|---|---|---|---|
+| 2.1 | Éxito (Ruta Feliz) | Éxito. Inserción en pagos y reserva.id_estado actualizado a Pagado. | Pasa todas las validaciones. |
+| 2.2 | Fallo: Pago Duplicado | Fallo. RAISERROR: "La reserva X ya tiene un pago registrado." | Validación de unicidad (UQ_Pago_Reserva). |
+| 2.3 | Fallo: Reserva Inexistente | Fallo. RAISERROR: "La reserva X no existe." | Validación de existencia de la reserva. |
+| 2.4 | Fallo: Reserva Cancelada | Fallo. RAISERROR: "No se puede pagar una reserva que ha sido cancelada." | Validación del estado actual de la reserva.
+| 2.5 | Fallo: Monto Cero/Negativo | Fallo. Error de SQL. | Restricción CHECK chk_pagos_monto a nivel de tabla. |
+
+========================================================================
+ TRANSACCIÓN: CANCELACIÓN DE RESERVA (Actualiza estado y libera mesa)
+========================================================================
+
+| # | Caso de Prueba | Resultado Esperado | Condición (Validación T-SQL) |
+|---|---|---|---|
+| 3.1 | Éxito (Ruta Feliz) | Éxito. reserva.id_estado actualizado a Cancelado y fila eliminada en reserva_mesa. | Pasa todas las validaciones. |
+| 3.2 | Fallo: Ya Cancelada | Fallo. RAISERROR: "La reserva X ya se encuentra en estado Cancelado." | Validación del estado actual. |
+| 3.3 | Fallo: Reserva Inexistente | Fallo. RAISERROR: "La reserva X no existe." | Validación de existencia de la reserva. |
+| 3.4 | Caso Borde: Cancelar Pagada | Éxito. El estado se actualiza a 'Cancelado'. | Permite cancelar, ya que 'Pagado' no es 'Cancelado'. |
+
+========================================================================
+4. TRANSACCIÓN: ASIGNACIÓN/CAMBIO DE ROL DEL EMPLEADO
+========================================================================
+
+| # | Caso de Prueba | Resultado Esperado | Condición (Validación T-SQL) |
+|---|---|---|---|
+| 4.1 | Éxito: Cambio de Rol | Éxito. El rol anterior se desactiva y el nuevo se activa. | Lógica de UPDATE (desactivar) + UPDATE/INSERT (activar). |
+| 4.2 | Éxito: Nuevo Rol (Insertar) | Éxito. El rol anterior se desactiva y el nuevo rol se inserta como activo. | Lógica de INSERT cuando el rol no existe. |
+| 4.3 | Fallo: Rol Ya Activo | Fallo leve. RAISERROR de nivel 10 (AVISO): "El empleado ya tiene asignado y activo este rol..." | Validación de rol activo coincidente. |
+| 4.4 | Fallo: DNI Inexistente | Fallo. RAISERROR: "El DNI de empleado X no existe en la tabla persona." | Validación de existencia en persona. |
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+3. CONCLUCION EN BASE A LAS PRUEBAS REALIZADAS
+
+En base a las pruebas realizadas sobre las cuatro transacciones clave, concluimos que el modelo T-SQL implementado es altamente robusto y funcionalmente seguro para el proyecto del restaurante.
+
+El diseño prioriza la Integridad de Datos al trasladar la lógica crítica del negocio (reglas de validación) directamente a la base de datos, en lugar de depender únicamente de la capa de aplicación.
+
+### Puntos Destacados:
+
+1. Prevención de Errores Críticos: Se demostró la eficacia de los controles preventivos en la creación de reservas. El sistema evita activamente la doble reserva de mesas y la sobrereserva de clientes para la misma hora, garantizando que solo las reservas válidas y viables entren al sistema.
+2. Manejo de Estados: Las transacciones de Pago y Cancelación aseguran la coherencia del flujo de vida de la reserva. Al pagar, se evita la duplicidad; al cancelar, se libera la mesa inmediatamente (`DELETE en reserva_mesa`), manteniendo la disponibilidad en tiempo real.
+3. Coherencia de Empleados: La gestión de roles (Transacción D) es técnicamente sofisticada. El uso del índice único filtrado garantiza que cada empleado tenga un único rol principal activo, previniendo conflictos operativos y simplificando la lógica de permisos en futuras aplicaciones.
+
+En resumen, el código T-SQL cumple su objetivo: blindar el sistema de reservas contra inconsistencias y errores de negocio, estableciendo una base de datos confiable y lista para producción.
+
